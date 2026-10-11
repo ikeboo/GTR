@@ -15,31 +15,17 @@ import torch
 import torch.nn.functional as F
 
 from .utils import inverse_sigmoid
+from ...misc.keypoint_sigmas import get_keypoint_sigmas
 
 
-def get_sigmas(num_keypoints, device):
-    if num_keypoints == 17:
-        sigmas = np.array([
-            .26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62, 1.07,
-            1.07, .87, .87, .89, .89
-        ], dtype=np.float32) / 10.0
-    elif num_keypoints == 14:
-        sigmas = np.array([
-            .79, .79, .72, .72, .62, .62, 1.07, 1.07, .87, .87, .89, .89,
-            .79, .79
-        ]) / 10.0
-    elif num_keypoints == 3:
-        sigmas = np.array([
-            1.07, 1.07, 0.67
-        ]) / 10.0
-    else:
-        raise ValueError(f'Unsupported keypoints number {num_keypoints}')
-    sigmas = np.concatenate([[0.1], sigmas]) # for the center of the human
+def get_sigmas(num_keypoints, device, keypoint_sigmas=None):
+    sigmas = get_keypoint_sigmas(num_keypoints, keypoint_sigmas)
+    sigmas = np.concatenate([[0.1], sigmas]) # for the instance center
     sigmas = torch.tensor(sigmas, device=device, dtype=torch.float32)
     return sigmas[None, :, None]
 
 
-def prepare_for_cdn(dn_args, training, num_queries, num_classes, num_keypoints, hidden_dim, label_enc, pose_enc, img_dim, device):
+def prepare_for_cdn(dn_args, training, num_queries, num_classes, num_keypoints, hidden_dim, label_enc, pose_enc, img_dim, device, keypoint_sigmas=None):
     """
         A major difference of DINO from DN-DETR is that the author process pattern embedding pattern embedding in its detector
         forward function and use learnable tgt embedding, so we change this function a little bit.
@@ -104,7 +90,7 @@ def prepare_for_cdn(dn_args, training, num_queries, num_classes, num_keypoints, 
         poses = torch.cat([xy, poses], dim=1)
         non_viz = keypoints[:, (num_keypoints * 2):] == 0
         non_viz = torch.cat((torch.ones_like(non_viz[:, 0:1]).bool(), non_viz), dim=1)
-        vars = (2 * get_sigmas(num_keypoints, device)) ** 2
+        vars = (2 * get_sigmas(num_keypoints, device, keypoint_sigmas)) ** 2
 
 
         known_poses = poses.repeat(2 * dn_number, 1).reshape(-1, num_keypoints+1, 2)

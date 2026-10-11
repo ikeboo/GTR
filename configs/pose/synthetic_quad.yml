@@ -1,0 +1,61 @@
+__include__: ['coco_pose_finetune/gtrpose_s.yml']
+
+# Four corners in clockwise order, starting at the top left.
+output_dir: outputs/synthetic_quad
+eval_spatial_size: [128, 128]
+
+GTRPoseTransformer:
+  num_body_points: 4
+
+GTRPoseCriterion:
+  num_body_points: 4
+  matcher:
+    type: GTRPoseHungarianMatcher
+    cost_class: 2.0
+    cost_keypoints: 10.0
+    cost_oks: 4.0
+    focal_alpha: 0.25
+    num_body_points: 4
+
+GTRPosePostProcessor:
+  num_body_points: 4
+
+train_dataloader:
+  dataset:
+    img_folder: ./dataset/synthetic_quad_pose/train
+    ann_file: ./dataset/synthetic_quad_pose/train.json
+    transforms:
+      ops:
+        - {type: CutPaste, p: 0.5, max_pastes: 2}
+        - {type: RandomCutOut, p: 0.3, scale: [0.025, 0.08], n: 4}
+        - {type: PoseRandomHorizontalFlip, flip_pairs: [[0, 1], [2, 3]]}
+        - {type: GaussianNoise, std: 0.02, p: 0.2}
+        - {type: MotionBlur, kernel_size: [3, 5], p: 0.2}
+        - {type: GaussianBlur, p: 0.2}
+        - {type: PoseResize, size: [128, 128]}
+        - {type: JPEGDeter, quality: [50, 90], p: 0.2}
+        - {type: RandomRotation, degrees: 10, p: 0.3}
+        - {type: PoseToTensor}
+        - {type: PoseNormalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+      policy: null
+  total_batch_size: 4
+  num_workers: 0
+  collate_fn:
+    base_size: 128
+    stop_epoch: 72
+
+val_dataloader:
+  dataset:
+    img_folder: ./dataset/synthetic_quad_pose/val
+    ann_file: ./dataset/synthetic_quad_pose/val.json
+    transforms:
+      ops:
+        - {type: PoseResize, size: [128, 128]}
+        - {type: PoseToTensor}
+        - {type: PoseNormalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  total_batch_size: 4
+  num_workers: 0
+  collate_fn:
+    base_size: 128
+
+epochs: 10

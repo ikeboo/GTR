@@ -1,0 +1,4 @@
+# Install into the workspace .venv after requirements-mps.txt.
+onnx==1.19.0
+onnxruntime==1.28.0
+huggingface-hub==1.26.0

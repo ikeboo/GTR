@@ -10,18 +10,18 @@ Copyright (c) 2021 Microsoft. All Rights Reserved.
 Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 """
 
-import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 from torch import nn
 
 from ...core import register
+from ...misc.keypoint_sigmas import get_keypoint_sigmas
 
 
 @register()
 class GTRPoseHungarianMatcher(nn.Module):
     def __init__(self, cost_class: float = 1, focal_alpha=0.25,
-                 cost_keypoints=1.0, cost_oks=0.01, num_body_points=17):
+                 cost_keypoints=1.0, cost_oks=0.01, num_body_points=17, keypoint_sigmas=None):
         super().__init__()
         self.cost_class = cost_class
 
@@ -30,19 +30,7 @@ class GTRPoseHungarianMatcher(nn.Module):
         self.focal_alpha = focal_alpha
         self.num_body_points = num_body_points
 
-        if num_body_points==17:
-            self.sigmas = np.array([
-                .26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62, 1.07,
-                1.07, .87, .87, .89, .89
-            ], dtype=np.float32) / 10.0
-
-        elif num_body_points==14:
-            self.sigmas = np.array([
-                .79, .79, .72, .72, .62, .62, 1.07, 1.07, .87, .87, .89, .89,
-                .79, .79
-            ]) / 10.0
-        else:
-            raise NotImplementedError
+        self.sigmas = get_keypoint_sigmas(num_body_points, keypoint_sigmas)
 
     @torch.no_grad()
     def forward(self, outputs, targets):
@@ -50,12 +38,12 @@ class GTRPoseHungarianMatcher(nn.Module):
 
         # We flatten to compute the cost matrices in a batch
         out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()  # [batch_size * num_queries, num_classes]
-        out_keypoints = outputs["pred_keypoints"].flatten(0, 1)  # [batch_size * num_queries, 51]
+        out_keypoints = outputs["pred_keypoints"].flatten(0, 1)  # [batch_size * num_queries, 2*K]
 
         # Also concat the target labels and boxes
         tgt_ids = torch.cat([v["labels"] for v in targets])
-        tgt_keypoints = torch.cat([v["keypoints"] for v in targets])  # nkp, 51
-        tgt_area = torch.cat([v["area"] for v in targets])  # nkp, 51
+        tgt_keypoints = torch.cat([v["keypoints"] for v in targets])  # [num_targets, 3*K]
+        tgt_area = torch.cat([v["area"] for v in targets])
 
         # Compute the classification cost.
         alpha = self.focal_alpha
@@ -82,7 +70,7 @@ class GTRPoseHungarianMatcher(nn.Module):
             oks = oks.clamp(min=1e-6)
             cost_oks = 1 - oks
 
-            cost_keypoints = torch.abs(Z_pred[:, None, :] - Z_gt[None])  # npred, ngt, 34
+            cost_keypoints = torch.abs(Z_pred[:, None, :] - Z_gt[None])
             cost_keypoints = cost_keypoints * V_gt.repeat_interleave(2, dim=1)[None]
             cost_keypoints = cost_keypoints.sum(-1)
             C = self.cost_class * cost_class + self.cost_keypoints * cost_keypoints + self.cost_oks * cost_oks

@@ -95,8 +95,13 @@ class YAMLConfig(BaseConfig):
 
     @property
     def scaler(self, ):
-        if self._scaler is None and self.yaml_cfg.get('use_amp', False):
-            self._scaler = create('scaler', self.global_cfg)
+        if self._scaler is None and self.use_amp and 'scaler' in self.yaml_cfg:
+            device_type = torch.device(self.device).type if self.device else (
+                'cuda' if torch.cuda.is_available() else
+                'mps' if torch.backends.mps.is_available() else 'cpu'
+            )
+            if device_type in {'cuda', 'mps'}:
+                self._scaler = create('scaler', self.global_cfg, device=device_type)
         return super().scaler
 
     @property

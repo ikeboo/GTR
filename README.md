@@ -220,6 +220,98 @@ python tools/dota_submit.py -c configs/obb/dota_finetune/gtrobb_s.yml -r weights
 
 </details>
 
+### Custom keypoint layouts
+
+For pose datasets, put the ordered keypoint names in each COCO category and use
+the same number of points for every category. Each annotation needs `keypoints`
+(`x, y, visibility` for each point), `num_keypoints`, `bbox`, and `area`. Set
+`num_body_points` to that count in `GTRPoseTransformer`, `GTRPoseCriterion`, its
+`GTRPoseHungarianMatcher`, and `GTRPosePostProcessor`. The
+[`synthetic_quad.yml`](configs/pose/synthetic_quad.yml) config shows a four-corner
+layout. If horizontal flips change point identities, set `flip_pairs` on
+`PoseRandomHorizontalFlip`; the default swaps COCO person joints only for 17 points.
+
+The pose training pipeline also accepts `GaussianNoise`, `GaussianBlur`,
+`MotionBlur`, `JPEGDeter`, `RandomRotation`, `RandomCutOut`, and `CutPaste`.
+The four-point [`synthetic_quad.yml`](configs/pose/synthetic_quad.yml) uses all
+seven as an example. Put them before `PoseToTensor` and `PoseNormalize` when
+using PIL images. `CutPaste` requires four visible polygon corners and copies
+objects from earlier images kept in a bounded cache; it is specific to
+four-corner layouts. `RandomCutOut` changes pixels without changing annotations.
+
+The existing 17-, 14-, and 3-point sigmas are retained. Other layouts default
+to 0.05 per point (the four-corner value in ecpose). To use other OKS scales,
+set the same `keypoint_sigmas` list in the transformer, criterion, matcher, and evaluator.
+Changing the keypoint count changes the pose head's weight shapes, so initialise
+a new layout from a compatible backbone rather than a full 17-point pose checkpoint.
+
+Generate and check the small homography quadrilateral dataset with:
+
+```bash
+.venv/bin/python tools/make_synthetic_quad_pose.py
+.venv/bin/python tools/eval_synthetic_quad_pose.py
+```
+
+The check uses ground-truth coordinates as predictions to exercise loading,
+normalization, matching, criterion backward, OKS, postprocessing, and COCO
+evaluation. Its AP is a pipeline check, not a trained model score. The generated
+data and `evaluation.json` live under `dataset/synthetic_quad_pose/`.
+
+On an Apple Silicon Mac, install the MPS dependencies into a workspace virtual
+environment and run the actual GTR pose model with:
+
+```bash
+uv venv .venv
+UV_CACHE_DIR=.venv/uv-cache uv pip install --python .venv/bin/python -r requirements-mps.txt
+.venv/bin/python tools/make_synthetic_quad_pose.py
+.venv/bin/python tools/check_mps_pose.py
+.venv/bin/python train.py -c configs/pose/synthetic_quad.yml --test-only -d mps
+.venv/bin/python train.py -c configs/pose/synthetic_quad.yml -d mps --no-auto-resume
+```
+
+The MPS check performs one optimizer step and evaluates the eight validation
+images, writing `dataset/synthetic_quad_pose/mps_evaluation.json`. It starts
+from random weights, so its AP measures execution rather than trained accuracy.
+`train.py` also selects MPS automatically when CUDA is unavailable; use `-d mps`
+to make the choice explicit. Add `--use-amp` for MPS FP16 autocast with gradient
+scaling. The CUDA requirements remain in `requirements.txt`.
+
+### Pose ONNX export
+
+Export a pose checkpoint as a standard ONNX graph with scores, labels, and
+pixel-space keypoints. The graph includes the pose postprocessor and uses a
+fixed batch size of one and the config's `eval_spatial_size`. It contains no
+custom GTR operators, so `repos/inferencers/ec_pose.py` can load it with ONNX
+Runtime. Install the ONNX packages into the same workspace environment:
+
+```bash
+UV_CACHE_DIR=.venv/uv-cache uv pip install --python .venv/bin/python -r requirements-onnx.txt
+.venv/bin/python train.py -c configs/pose/synthetic_quad.yml -d mps \
+  --no-auto-resume --output-dir .venv/onnx_pose/train -u epochs=1
+.venv/bin/python tools/export_pose_onnx.py \
+  --config configs/pose/synthetic_quad.yml \
+  --checkpoint .venv/onnx_pose/train/best.pth \
+  --output .venv/onnx_pose/quad.onnx \
+  --verify-images dataset/synthetic_quad_pose/val --verify-device mps
+```
+
+Replace the checkpoint path with your trained pose checkpoint as needed. The script
+checks all selected images against PyTorch and calls the existing `ECPose`
+inferencer. It writes a `.verification.json` report next to the ONNX file.
+`--verify-images` also accepts a single image, for example `assets/00.jpg`.
+The report includes detections at the ECPose default threshold of 0.4 (adjustable
+with `--verify-threshold`), while numerical parity covers all raw outputs.
+GLA log-sigmoid gates use `-Softplus(-x)` during export to avoid `Log(Sigmoid(x))`
+underflow for strongly negative learned gates. Re-export older ONNX files if
+PyTorch detects correctly but ONNX predictions are incorrect.
+Deploy mode also resolves tied decoder query scores by the lower anchor index,
+matching ONNX TopK. Tied candidates can therefore differ from ordinary PyTorch
+evaluation, whose TopK order is unspecified; parity checks use deploy mode.
+On the eight synthetic validation images, the one-epoch checkpoint produced
+identical labels, a maximum score difference of 2.1e-7, and a maximum keypoint
+difference of 3.1e-5 pixels between PyTorch MPS and ONNX Runtime CPU. This checks
+conversion parity; it does not establish the accuracy of the short training run.
+
 ## Training
 
 <details>

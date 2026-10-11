@@ -5,7 +5,7 @@ Copyright (c) 2026 The GTR Authors. All Rights Reserved.
 COCO keypoint dataset for the pose task, ported from
 DETRPose (https://github.com/SebastianJanampa/DETRPose).
 
-Keeps raw pixel-space targets (boxes xyxy, keypoints (N, 17, 3)); the pose transforms
+Keeps raw pixel-space targets (boxes xyxy, keypoints (N, K, 3)); the pose transforms
 (PoseNormalize) convert them to the normalized format consumed by DETRPose.
 """
 
@@ -36,7 +36,15 @@ class CocoPoseDetection(torchvision.datasets.CocoDetection, DetDataset):
     def __init__(self, img_folder, ann_file, transforms, return_masks=False):
         super(CocoPoseDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
-        self.prepare = ConvertCocoKeypointsToTarget(return_masks)
+        keypoint_counts = {
+            len(category.get('keypoints', []))
+            for category in self.coco.dataset.get('categories', [])
+            if category.get('keypoints')
+        }
+        if len(keypoint_counts) != 1:
+            raise ValueError(f'Expected one COCO keypoint layout, found {sorted(keypoint_counts)}')
+        self.num_keypoints = keypoint_counts.pop()
+        self.prepare = ConvertCocoKeypointsToTarget(return_masks, self.num_keypoints)
         self.img_folder = Path(img_folder)
         self.ann_file = ann_file
         self.return_masks = return_masks
@@ -74,7 +82,11 @@ class CocoPoseDetection(torchvision.datasets.CocoDetection, DetDataset):
         target = self.coco.loadAnns(ann_ids)
 
         target = {'image_id': image_id, 'annotations': target}
-        img = Image.open(self.img_folder / self.coco.loadImgs(image_id)[0]['file_name'])
+        file_name = Path(self.coco.loadImgs(image_id)[0]['file_name'])
+        img_path = self.img_folder / file_name
+        if not img_path.is_file() and file_name.parts and file_name.parts[0] == self.img_folder.name:
+            img_path = self.img_folder.joinpath(*file_name.parts[1:])
+        img = Image.open(img_path)
         img, target = self.prepare(img, target)
         return img, target
 
@@ -103,8 +115,9 @@ class CocoPoseDetection(torchvision.datasets.CocoDetection, DetDataset):
 
 
 class ConvertCocoKeypointsToTarget(object):
-    def __init__(self, return_masks=False):
+    def __init__(self, return_masks=False, num_keypoints=17):
         self.return_masks = return_masks
+        self.num_keypoints = num_keypoints
 
     def __call__(self, image: Image.Image, target, **kwargs):
         w, h = image.size
@@ -120,10 +133,13 @@ class ConvertCocoKeypointsToTarget(object):
         anno = target["annotations"]
 
         anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
-        anno = [obj for obj in anno if obj['num_keypoints'] != 0]
+        anno = [obj for obj in anno if obj.get('num_keypoints', 0) != 0]
         keypoints = [obj["keypoints"] for obj in anno]
         boxes = [obj["bbox"] for obj in anno]
-        keypoints = torch.as_tensor(keypoints, dtype=torch.float32).reshape(-1, 17, 3)
+        for obj in anno:
+            if len(obj['keypoints']) != 3 * self.num_keypoints:
+                raise ValueError(f"Annotation {obj.get('id')} has {len(obj['keypoints']) // 3} keypoints; expected {self.num_keypoints}")
+        keypoints = torch.as_tensor(keypoints, dtype=torch.float32).reshape(len(anno), self.num_keypoints, 3)
         # guard against no boxes via resizing
         boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
         boxes[:, 2:] += boxes[:, :2]

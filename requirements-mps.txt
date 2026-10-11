@@ -1,0 +1,15 @@
+# Apple Silicon / PyTorch MPS. The backbone uses its PyTorch GLA implementation.
+# Keep torch and torchvision on the same release pair.
+torch==2.13.0
+torchvision==0.28.0
+
+calflops
+einops
+faster-coco-eval
+h5py
+lmdb
+opencv-python-headless
+pyyaml
+scipy
+tensorboard
+transformers

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 import torch
-from torch.cuda.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 
 from ..data import CocoEvaluator
@@ -376,7 +376,7 @@ def _train_step(
         t0 = time.time()
         with sync_context:
             with torch.profiler.record_function('gtr/forward'), torch.autocast(
-                device_type=str(device),
+                device_type=device.type,
                 dtype=amp_dtype,
                 cache_enabled=True,
             ):
@@ -403,7 +403,7 @@ def _train_step(
                     new_state['model'] = state
                     dist_utils.save_on_master(new_state, "./NaN.pth")
 
-            with torch.profiler.record_function('gtr/criterion'), torch.autocast(device_type=str(device), enabled=False):
+            with torch.profiler.record_function('gtr/criterion'), torch.autocast(device_type=device.type, enabled=False):
                 loss_dict = criterion(_float_outputs_for_loss(outputs), targets, **metas)
             if profile_times and torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -424,7 +424,8 @@ def _train_step(
                     if max_norm > 0:
                         with torch.profiler.record_function('gtr/grad_clip'):
                             scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm, foreach=True)
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm,
+                                                           foreach=device.type == 'cuda')
 
                     with torch.profiler.record_function('gtr/optimizer_step'):
                         scaler.step(optimizer)
@@ -441,7 +442,8 @@ def _train_step(
                 if is_accum_end:
                     if max_norm > 0:
                         with torch.profiler.record_function('gtr/grad_clip'):
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm, foreach=True)
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm,
+                                                           foreach=device.type == 'cuda')
 
                     with torch.profiler.record_function('gtr/optimizer_step'):
                         optimizer.step()
@@ -478,7 +480,8 @@ def _train_step(
             if is_accum_end:
                 if max_norm > 0:
                     with torch.profiler.record_function('gtr/grad_clip'):
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm, foreach=True)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm,
+                                                       foreach=device.type == 'cuda')
 
                 with torch.profiler.record_function('gtr/optimizer_step'):
                     optimizer.step()

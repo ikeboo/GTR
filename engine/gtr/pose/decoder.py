@@ -35,6 +35,15 @@ def _get_clones(module, N, layer_share=False):
         return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
+def select_query_indices(query_scores, num_queries, deploy=False):
+    if deploy and not torch.onnx.is_in_onnx_export():
+        # ONNX TopK breaks ties by the lower input index; torch.topk has
+        # no stable tie order. Masked anchors often have identical scores,
+        # and selecting different anchors changes across-query attention.
+        return torch.argsort(query_scores, dim=1, descending=True, stable=True)[:, :num_queries]
+    return torch.topk(query_scores, num_queries, dim=1)[1]
+
+
 def weighting_function(reg_max, up, reg_scale, deploy=False):
     """
     Generates the non-uniform Weighting Function W(n) for bounding box regression.
@@ -142,7 +151,13 @@ class Integral(nn.Module):
         shape = x.shape
 
         x = F.softmax(x.reshape(-1, self.reg_max + 1), dim=1)
-        x = F.linear(x, project.to(x.device)).reshape(-1, 4)
+        weights = project.to(x.device)
+        # MPSGraph miscompiles the backward of F.linear with a rank-1 weight.
+        # The elementwise reduction is the same integral and has a valid MPS grad.
+        if x.device.type == 'mps':
+            x = (x * weights.reshape(1, -1)).sum(dim=1).reshape(-1, 4)
+        else:
+            x = F.linear(x, weights).reshape(-1, 4)
         return x.reshape(list(shape[:-1]) + [-1])
 
 
@@ -445,7 +460,8 @@ class GTRPoseTransformer(nn.Module):
         feat_strides=None,
         eval_spatial_size=None,
         reg_max=32,
-        reg_scale=4.0
+        reg_scale=4.0,
+        keypoint_sigmas=None,
         ):
         super().__init__()
         self.eval_aux = self.eval_aux = getattr(self, "eval_aux", False)
@@ -468,6 +484,7 @@ class GTRPoseTransformer(nn.Module):
 
         # shared prior between instances
         self.num_body_points = num_body_points
+        self.keypoint_sigmas = keypoint_sigmas
         self.keypoint_embedding = nn.Embedding(num_body_points, self.hidden_dim)
         self.instance_embedding = nn.Embedding(1, self.hidden_dim)
 
@@ -640,7 +657,8 @@ class GTRPoseTransformer(nn.Module):
         # top-k select index
         topk = self.num_queries
         enc_outputs_class_unselected = self.enc_out_class_embed(output_memory)
-        topk_idx = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
+        query_scores = enc_outputs_class_unselected.max(-1)[0]
+        topk_idx = select_query_indices(query_scores, topk, deploy=self.deploy)
 
         # calculate K, e.g., 17 for COCO, points for keypoint
         topk_memory = output_memory.gather(
@@ -683,6 +701,7 @@ class GTRPoseTransformer(nn.Module):
                 label_enc=self.label_enc,
                 pose_enc=self.pose_enc,
                 num_keypoints=self.num_body_points,
+                keypoint_sigmas=self.keypoint_sigmas,
                 img_dim=samples.shape[-2:],
                 device=feats[0].device
                 )

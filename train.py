@@ -10,6 +10,22 @@ Copyright (c) 2024 The DEIM Authors. All Rights Reserved.
 ---------------------------------------------------------------------------------
 Modified from RT-DETR (https://github.com/lyuwenyu/RT-DETR)
 Copyright (c) 2023 lyuwenyu. All Rights Reserved.
+
+Usage (run from the repository root with the workspace .venv):
+    # Start a pose-M fine-tuning run on MPS from pretrained weights.
+    .venv/bin/python train.py -c configs/pose/custom_pose_m.yml -d mps \
+        -t weights/gtrpose_m_coco.pth --no-auto-resume 
+
+    # Resume that run, or evaluate its saved checkpoint.
+    .venv/bin/python train.py -c configs/pose/custom_pose_m.yml -d mps \
+        -r .venv/pose_m_run/last.pth
+    .venv/bin/python train.py -c configs/pose/custom_pose_m.yml -d mps \
+        -r .venv/pose_m_run/best.pth --test-only
+
+Options: -c selects a YAML config, -d selects a device, -t loads pretrained
+weights, -r resumes a checkpoint, and -u overrides YAML values. Without -t or
+-r, training automatically resumes from output_dir when a checkpoint exists;
+--no-auto-resume starts a new run.
 """
 
 import os
@@ -141,7 +157,8 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--tuning', type=str, help='tuning from checkpoint')
     parser.add_argument('-d', '--device', type=str, help='device',)
     parser.add_argument('--seed', type=int, default=0, help='exp reproducibility')
-    parser.add_argument('--use-amp', action='store_true', help='auto mixed precision training')
+    parser.add_argument('--use-amp', action='store_true', default=None,
+                        help='auto mixed precision training')
     parser.add_argument('--output-dir', type=str, help='output directoy')
     parser.add_argument('--summary-dir', type=str, help='tensorboard summry')
     parser.add_argument('--test-only', action='store_true', default=False,)

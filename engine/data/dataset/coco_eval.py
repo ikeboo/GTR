@@ -20,22 +20,24 @@ from faster_coco_eval import COCO, COCOeval_faster
 
 from ...core import register
 from ...misc import dist_utils
+from ...misc.keypoint_sigmas import get_keypoint_sigmas
 
 __all__ = ['CocoEvaluator',]
 
 
 @register()
 class CocoEvaluator(object):
-    def __init__(self, coco_gt, iou_types, verbose=True):
+    def __init__(self, coco_gt, iou_types, verbose=True, keypoint_sigmas=None):
         assert isinstance(iou_types, (list, tuple))
         coco_gt = copy.deepcopy(coco_gt)
         self.coco_gt : COCO = coco_gt
         self.iou_types = iou_types
         self.labels = [cat['name'] for cat in coco_gt.loadCats(coco_gt.getCatIds())] if verbose else None
+        self.keypoint_sigmas = keypoint_sigmas
             
         self.coco_eval = {}
         for iou_type in iou_types:
-            self.coco_eval[iou_type] = COCOeval_faster(coco_gt, iouType=iou_type, print_function=print, separate_eval=True)
+            self.coco_eval[iou_type] = self._create_coco_eval(iou_type)
 
         self.img_ids = []
         self.eval_imgs = {k: [] for k in iou_types}
@@ -43,9 +45,23 @@ class CocoEvaluator(object):
     def cleanup(self):
         self.coco_eval = {}
         for iou_type in self.iou_types:
-            self.coco_eval[iou_type] = COCOeval_faster(self.coco_gt, iouType=iou_type, print_function=print, separate_eval=True)
+            self.coco_eval[iou_type] = self._create_coco_eval(iou_type)
         self.img_ids = []
         self.eval_imgs = {k: [] for k in self.iou_types}
+
+    def _create_coco_eval(self, iou_type):
+        kwargs = {}
+        if iou_type == 'keypoints':
+            counts = {
+                len(cat.get('keypoints', []))
+                for cat in self.coco_gt.dataset.get('categories', [])
+                if cat.get('keypoints')
+            }
+            if len(counts) != 1:
+                raise ValueError(f'Expected one COCO keypoint layout, found {sorted(counts)}')
+            kwargs['kpt_oks_sigmas'] = get_keypoint_sigmas(counts.pop(), self.keypoint_sigmas).tolist()
+        return COCOeval_faster(self.coco_gt, iouType=iou_type, print_function=print,
+                               separate_eval=True, **kwargs)
 
 
     def update(self, predictions):

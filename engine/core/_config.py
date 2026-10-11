@@ -11,7 +11,7 @@ from typing import Callable, Dict, List
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset
@@ -204,8 +204,13 @@ class BaseConfig(object):
 
     @property
     def scaler(self) -> GradScaler:
-        if self._scaler is None and self.use_amp and torch.cuda.is_available():
-            self._scaler = GradScaler()
+        if self._scaler is None and self.use_amp:
+            device_type = torch.device(self.device).type if self.device else (
+                'cuda' if torch.cuda.is_available() else
+                'mps' if torch.backends.mps.is_available() else 'cpu'
+            )
+            if device_type in {'cuda', 'mps'}:
+                self._scaler = GradScaler(device_type)
         return self._scaler
 
     @scaler.setter

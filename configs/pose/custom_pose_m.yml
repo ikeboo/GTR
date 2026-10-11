@@ -1,0 +1,85 @@
+__include__: ['coco_pose_finetune/gtrpose_m.yml']
+
+# The five-category, four-corner license-plate dataset used by ecpose's
+# configs/dataset/custom_pose.yml and configs/ecpose/ecpose_m_custom.yml.
+output_dir: outputs/custom_pose_m
+eval_spatial_size: [640, 640]
+num_classes: 6
+remap_mscoco_category: False
+epochs: 40
+checkpoint_freq: 10
+print_freq: 150
+sync_bn: False
+use_amp: False
+
+# The COCO pose-M checkpoint is loaded with train.py --tuning. Its 17-point
+# and two-class heads are skipped automatically when their shapes differ.
+ViTAdapterSpatialSwiGLU:
+  weights_path: null
+  skip_weights_warning: True
+
+GTRPoseTransformer:
+  num_body_points: 4
+
+GTRPoseCriterion:
+  num_classes: 6
+  num_body_points: 4
+  matcher:
+    type: GTRPoseHungarianMatcher
+    cost_class: 2.0
+    cost_keypoints: 10.0
+    cost_oks: 4.0
+    focal_alpha: 0.25
+    num_body_points: 4
+
+GTRPosePostProcessor:
+  num_body_points: 4
+
+lr_scheduler:
+  milestones: [4]
+
+train_dataloader:
+  dataset:
+    img_folder: ../License-plate/dataset/train_images
+    ann_file: ../License-plate/dataset/train_labels.json
+    transforms:
+      ops:
+        # Bound augmentation cost on high-resolution source photographs.
+        # - {type: PoseResize, size: [640, 640]}
+        - {type: CutPaste, p: 0.5, max_pastes: 5}
+        - {type: RandomCutOut, p: 0.5, scale: [0.025, 0.08], n: 40}
+        - {type: PoseRandomZoomOut, p: 1.0, side_range: [1.0, 1.7]}
+        - {type: MotionBlur, kernel_size: [3, 9], angle: [-180, 180], p: 0.2}
+        - {type: GaussianBlur, p: 0.3}
+        - {type: GaussianNoise, p: 0.5}
+        - {type: PoseColorJitter, brightness: 0.2, contrast: 0.2, saturation: 0.1, hue: 0.05, p: 0.5}
+        - {type: PoseResize, size: [640, 640]}
+        - {type: JPEGDeter, quality: [30, 90], p: 0.3}
+        - {type: RandomRotation, degrees: 10, p: 1.0}
+        - {type: PoseToTensor}
+        - {type: PoseNormalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+      policy:
+        name: stop_epoch
+        epoch: [3, 20, 38]
+        ops: ['PoseMosaic', 'MixUpCopyPaste', 'PoseRandomZoomOut']
+      mosaic_prob: 0.5
+  total_batch_size: 8
+  shuffle: True
+  num_workers: 8
+  collate_fn:
+    base_size: 640
+    stop_epoch: 28
+
+val_dataloader:
+  dataset:
+    img_folder: ../License-plate/dataset/val_images
+    ann_file: ../License-plate/dataset/val_labels.json
+    transforms:
+      ops:
+        - {type: PoseResize, size: [640, 640]}
+        - {type: PoseToTensor}
+        - {type: PoseNormalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+  total_batch_size: 16
+  num_workers: 8
+  collate_fn:
+    base_size: 640

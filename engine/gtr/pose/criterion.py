@@ -29,6 +29,7 @@ class GTRPoseCriterion(nn.Module):
         focal_alpha=0.25,
         mal_alpha=None,
         gamma=2.0,
+        keypoint_sigmas=None,
         ):
         super().__init__()
         self.num_classes = num_classes
@@ -43,6 +44,7 @@ class GTRPoseCriterion(nn.Module):
         self.num_body_points = num_body_points
         self.oks = OKSLoss(linear=True,
                  num_keypoints=num_body_points,
+                 sigmas=keypoint_sigmas,
                  eps=1e-6,
                  reduction='mean',
                  loss_weight=1.0)

@@ -28,12 +28,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
-from fla.modules import FusedRMSNormGated, RMSNorm, ShortConvolution
-from fla.modules.activations import ACT2FN
-from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
-from transformers.processing_utils import Unpack
-from fla.models.utils import Cache
+from .gla_portable import portable_gla
+
+# FLA supplies the fast CUDA kernels. Its Triton modules cannot run on MPS, so
+# the portable modules also provide norm layers when CUDA is unavailable.
+_fla_available = False
+if torch.cuda.is_available():
+    try:
+        from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
+        from fla.modules import FusedRMSNormGated, RMSNorm, ShortConvolution
+        from fla.modules.activations import ACT2FN
+        from fla.ops.gla import chunk_gla, fused_chunk_gla, fused_recurrent_gla
+        _fla_available = True
+    except ImportError:
+        pass
+if not _fla_available:
+    from .gla_portable import (ACT2FN, FusedRMSNormGated, RMSNorm,
+                               ShortConvolution, get_unpad_data,
+                               index_first_axis, pad_input)
 
 # Optional hand-written CUDA chunk_gla path. Enabled when:
 #   * the extension module is importable (compiled once via engine/gtr/backbone/csrc/build.sh)
@@ -485,6 +497,7 @@ class GatedLinearAttention(nn.Module):
         # Plugin eligibility — checked early so we can skip the standalone
         # logsigmoid/div op when chunk_compute_S will fold it in.
         plugin_eligible = (getattr(self, '_use_cuda_chunk_gla', False)
+                and q.device.type == 'cuda'
                 and mode != 'fused_recurrent'   # keep the recurrent path for short seqs
                 and not self.training
                 and not use_cache
@@ -504,7 +517,13 @@ class GatedLinearAttention(nn.Module):
                 and g_pre is not None)
 
         if not plugin_folds_gk:
-            gk = F.logsigmoid(gk) / self.gate_logit_normalizer
+            # Legacy ONNX export lowers logsigmoid to Log(Sigmoid(x)), which
+            # can produce -inf for learned negative gates. Softplus preserves
+            # the finite log-sigmoid values needed by the GLA gate differences.
+            if torch.onnx.is_in_onnx_export():
+                gk = -F.softplus(-gk) / self.gate_logit_normalizer
+            else:
+                gk = F.logsigmoid(gk) / self.gate_logit_normalizer
             if self.clamp_min is not None:
                 gk = torch.clamp_min(gk, self.clamp_min)
         if self.feature_map_fn is not None:
@@ -516,7 +535,11 @@ class GatedLinearAttention(nn.Module):
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         # Fast path: deploy + CUDA chunk_gla extension. Skips the Triton kernels for a
         # ~3-4x kernel-time speedup over fla.chunk_gla on Ada-class GPUs.
-        if plugin_eligible:
+        if q.device.type != 'cuda' or not _fla_available:
+            o, recurrent_state = portable_gla(q, k, v, gk,
+                initial_state=recurrent_state, output_final_state=use_cache,
+                cu_seqlens=cu_seqlens)
+        elif plugin_eligible:
             ws, out_buf = self._get_or_make_gla_ws(q)
             gk_norm = float(self.gate_logit_normalizer) if plugin_folds_gk else 0.0
             if gated_eligible:
@@ -1119,11 +1142,3 @@ class ViTAdapter(nn.Module):
             proj_feats = [layer(feat) for layer, feat in zip(self.projector, proj_feats)]
 
         return proj_feats
-
-
-
-
-    
-
-        
-    

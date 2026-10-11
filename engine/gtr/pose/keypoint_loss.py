@@ -6,9 +6,10 @@ Keypoint OKS loss for the pose task.
 Modified from DETRPose (https://github.com/SebastianJanampa/DETRPose)
 """
 
-import numpy as np
 import torch
 import torch.nn as nn
+
+from ...misc.keypoint_sigmas import get_keypoint_sigmas
 
 
 def oks_overlaps(kpt_preds, kpt_gts, kpt_valids, kpt_areas, sigmas):
@@ -49,28 +50,14 @@ class OKSLoss(nn.Module):
                  num_keypoints=17,
                  eps=1e-6,
                  reduction='mean',
-                 loss_weight=1.0):
+                 loss_weight=1.0,
+                 sigmas=None):
         super(OKSLoss, self).__init__()
         self.linear = linear
         self.eps = eps
         self.reduction = reduction
         self.loss_weight = loss_weight
-        if num_keypoints == 17:
-            self.sigmas = np.array([
-                .26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62, 1.07,
-                1.07, .87, .87, .89, .89
-            ], dtype=np.float32) / 10.0
-        elif num_keypoints == 14:
-            self.sigmas = np.array([
-                .79, .79, .72, .72, .62, .62, 1.07, 1.07, .87, .87, .89, .89,
-                .79, .79
-            ]) / 10.0
-        elif num_keypoints == 3:
-            self.sigmas = np.array([
-                1.07, 1.07, 0.67
-            ]) / 10.0
-        else:
-            raise ValueError(f'Unsupported keypoints number {num_keypoints}')
+        self.sigmas = get_keypoint_sigmas(num_keypoints, sigmas)
 
     def forward(self,
                 pred,

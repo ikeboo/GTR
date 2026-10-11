@@ -53,6 +53,15 @@ from ._transforms import (
 )
 from .container import Compose
 from .mosaic import Mosaic
+from .pose_augmentations import (
+    GaussianBlur,
+    GaussianNoise,
+    JPEGDeter,
+    MotionBlur,
+    RandomRotation,
+)
+from .cutpaste import CutPaste
+from .random_cutout import RandomCutOut
 from .obb_transforms import (
     RandomOBBFlip,
     RandomOBBRotate,
