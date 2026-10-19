@@ -1,6 +1,7 @@
 """Pose image augmentations adapted from repos/ecpose.
 
 These operate on (image, pixel-space target) pairs before PoseNormalize.
+Blur and noise also accept detection Compose's (image, target, dataset) sample.
 """
 
 import numbers
@@ -17,6 +18,19 @@ from PIL import Image
 from torchvision import transforms
 
 from ...core import register
+
+
+class _ImageOnlyTransform:
+    """Share image effects between pose pairs and detection Compose samples."""
+
+    def __call__(self, img, target=None, *extra):
+        if target is None and not extra and isinstance(img, (tuple, list)):
+            if len(img) not in (2, 3):
+                raise ValueError('Expected (image, target) or (image, target, dataset).')
+            img, target, *extra = img
+        if len(extra) > 1:
+            raise ValueError('Expected (image, target) or (image, target, dataset).')
+        return (self._apply_image(img), target, *extra)
 
 
 @register()
@@ -174,7 +188,7 @@ class RandomRotation(object):
 
 
 @register()
-class GaussianNoise(object):
+class GaussianNoise(_ImageOnlyTransform):
     """Add Gaussian noise to a PIL or tensor image.
 
     ``mean`` and ``std`` are specified on the normalized ``[0, 1]`` image
@@ -219,9 +233,9 @@ class GaussianNoise(object):
 
         return output
 
-    def __call__(self, img, target=None):
+    def _apply_image(self, img):
         if random.random() >= self.p:
-            return img, target
+            return img
 
         if isinstance(img, PIL.Image.Image):
             tensor = F.pil_to_tensor(img)
@@ -234,7 +248,7 @@ class GaussianNoise(object):
                 f"GaussianNoise expects a PIL image or tensor, got {type(img)}"
             )
 
-        return img, target
+        return img
 
     def __repr__(self):
         return (
@@ -244,7 +258,7 @@ class GaussianNoise(object):
 
 
 @register()
-class GaussianBlur(object):
+class GaussianBlur(_ImageOnlyTransform):
     """Apply Gaussian blur to a PIL or tensor image with probability ``p``."""
 
     def __init__(self, kernel_size=5, sigma=(0.1, 2.0), p=0.5):
@@ -258,10 +272,10 @@ class GaussianBlur(object):
         # native augmentation implementation.
         self.transform = T.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
 
-    def __call__(self, img, target=None):
+    def _apply_image(self, img):
         if random.random() < self.p:
             img = self.transform(img)
-        return img, target
+        return img
 
     def __repr__(self):
         return (
@@ -387,7 +401,7 @@ class JPEGDeter(object):
 
 
 @register()
-class MotionBlur(object):
+class MotionBlur(_ImageOnlyTransform):
     """Apply inexpensive linear motion blur with a random length and angle.
 
     A single normalized line kernel and one depth-wise convolution are used,
@@ -524,9 +538,9 @@ class MotionBlur(object):
         dtype_info = torch.iinfo(original_dtype)
         return output.round().clamp(dtype_info.min, dtype_info.max).to(original_dtype)
 
-    def __call__(self, img, target=None):
+    def _apply_image(self, img):
         if random.random() >= self.p:
-            return img, target
+            return img
 
         kernel = self._make_kernel(
             self._sample_kernel_size(), self._sample_angle()
@@ -539,7 +553,7 @@ class MotionBlur(object):
             raise TypeError(
                 f"MotionBlur expects a PIL image or tensor, got {type(img)}"
             )
-        return img, target
+        return img
 
     def __repr__(self):
         return (

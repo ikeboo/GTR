@@ -276,6 +276,41 @@ from random weights, so its AP measures execution rather than trained accuracy.
 to make the choice explicit. Add `--use-amp` for MPS FP16 autocast with gradient
 scaling. The CUDA requirements remain in `requirements.txt`.
 
+### Custom detection on Apple MPS
+
+`configs/det/gtr_s_custom_mps.yml` inherits the custom detection model and its
+YOLO-style augmentations. Edit the augmentation operations and their parameters
+in `configs/dataset/custom_detection.yml`; both the standard and MPS custom
+model configs inherit them. `gtr_s_custom.yml` includes the dataset after
+`gtr_base.yml` so the dataset's settings take precedence over the base defaults.
+The MPS config uses FP32, a training batch of 4, and a validation
+batch of 8. The detection distribution integral uses an elementwise weighted
+sum on MPS to avoid a Metal backward failure with one-dimensional linear weights.
+
+Check two training steps, EMA updates, eight validation images, and checkpoint
+save/reload with the available Objects365 checkpoint:
+
+```bash
+.venv/bin/python tools/check_mps_det.py -t weights/gtr_s_obj365.pth --workers 4
+```
+
+The check writes `outputs/mps_det_check/report.json` and a separate smoke
+checkpoint. Its validation scores are an execution check, not trained accuracy.
+Start the full training run with 32 accumulation steps for an effective batch
+of 128 per full accumulation group:
+
+```bash
+GTR_GRAD_ACCUM_STEPS=32 .venv/bin/python train.py \
+  -c configs/det/gtr_s_custom_mps.yml -d mps \
+  -t weights/gtr_s_obj365.pth --no-auto-resume
+```
+
+Use the same accumulation setting when resuming, and replace `-t` with
+`-r outputs/custom_gtr_s_mps/last.pth`. The Objects365 checkpoint initializes
+the backbone and compatible detection layers; class heads with different
+shapes are initialized for the custom classes. The standalone backbone file
+configured in `gtr_s_custom.yml` is not required when using `-t`.
+
 ### Pose ONNX export
 
 Export a pose checkpoint as a standard ONNX graph with scores, labels, and
@@ -383,6 +418,101 @@ python tools/benchmark/torch_speed.py --configs configs/det/coco_finetune/gtr_s.
 TensorRT support lives in [`tensorrt_plugin/`](tensorrt_plugin). It includes ONNX export, fp32/fp16 engine builds with `trtexec`, and PyTorch-vs-TensorRT checks. GLA is handled by a TensorRT plugin backed by the CUDA kernels in `engine/gtr/backbone/csrc`.
 
 More details are in [`tensorrt_plugin/README.md`](tensorrt_plugin/README.md).
+
+## CoreML detection inference
+
+For repeated image patches with ANE enabled, use the split exporter:
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-coreml.txt
+.venv/bin/python tools/export_det_coreml_split.py --verify-images assets/00.jpg path/to/patches
+.venv/bin/python tools/inference/coreml_split_inf.py --image assets/00.jpg
+.venv/bin/python tools/profile_det_coreml.py \
+    --model weights/gtr_s_obj365_ane_split.json --compute-units cpu_and_ne \
+    --runs 50 --output outputs/coreml/ane_split_profile.json
+```
+
+The manifest references two packages: FP16 backbone/encoder features loaded with
+`CPU_AND_NE`, and an FP32 decoder loaded with `CPU_AND_GPU`. Keep both models
+loaded across patches. The export uses the same pretrained EMA weights and fixed
+640×640 input. It batches GLA chunks and replaces the sequential carried-state
+recurrence with an associative prefix scan; its intermediate arithmetic tensors
+have at most four dimensions. Linear projections become 1×1 convolutions.
+Native ANE SiLU showed appreciable activation differences on this checkpoint,
+so a bounded exponential decomposition is used instead. The monolithic
+CPU/ANE decoder still failed detection parity; the split moves it to FP32 GPU
+execution. This is a hybrid ANE/GPU model, not an entirely ANE model.
+
+Split verification checks detections above score 0.4: identical counts/classes,
+score error at most 0.01 and coordinate error at most 2 pixels. Raw differences
+are retained for diagnostics and are not required to match. On the supplied
+image, six native 640×640 crops, their flips and three synthetic inputs (17
+inputs total), counts/classes matched, maximum score error was 0.00749, and
+maximum coordinate error was 1.433 pixels. These samples come from one real
+image; they are not an independent validation dataset or a 4K accuracy study.
+
+On M5 Pro/macOS 26.4, warmed repeated inference took about 2.7–2.8 seconds for
+50 calls, excluding preprocessing/postprocessing/box merging and model loading.
+The feature compute plan anticipated 2,500 ANE operations, 29 CPU operations,
+and four without device information; the decoder used GPU. Compute plans are
+anticipated assignments, not a measured ANE time fraction. This host also emits
+`ANECCompile() FAILED` warnings from the ANEF compiler path despite successful
+predictions. A CPU-only feature control had similar timing, so these results
+do **not** establish an ANE speedup or the iPhone 15 three-second target.
+Check actual device dispatch and end-to-end timing on iPhone using Xcode's Core
+ML performance report before adopting this configuration.
+
+[`CoreMLPatchBenchmark.swift`](tools/inference/CoreMLPatchBenchmark.swift) can
+benchmark the two compiled models in an iPhone app. Initialize it with the
+feature and decoder `.mlmodelc` URLs, then call `run(inputs:iterations:)` with
+50 prepared RGB/ImageNet-normalized NCHW patch feature providers. It passes
+FP16 feature values directly between models. The Python 9.0 binding widens
+FP16 numpy inputs to FP32, so the Python inference class uses persistent FP32
+bridge buffers; widening FP16 values is exact. The exported packages require
+iOS 18 / macOS 15 or newer.
+
+The original strict raw-output exporter remains available:
+
+Export the Objects365 detector using the workspace's uv environment (macOS 15 or newer):
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-coreml.txt
+.venv/bin/python tools/export_det_coreml.py
+.venv/bin/python tools/inference/coreml_inf.py \
+    --model weights/gtr_s_obj365_fp16.mlpackage --image assets/00.jpg
+```
+
+The exporter uses `weights/gtr_s_obj365.pth`'s EMA weights and a fixed batch of one,
+640×640 RGB input with ImageNet normalization. The default mixed precision keeps
+SpatialSwiGLU's value projections in blocks 9–11 in FP16, and preserves the earlier value, gate and
+contracting projections, GLA recurrence, convolutions, normalization, encoder and
+decoder in FP32. Full FP16 (`--precision fp16`) failed strict raw-output parity
+on this checkpoint. `--parity detections` selects thresholded detection checks.
+The package returns flattened float32 logits `[1,109800]` and normalized cxcywh
+boxes `[1,1200]`; the inference class reshapes them and performs the existing
+sigmoid/top-k/pixel scaling without NMS. Objects365 labels retain all 366 slots.
+
+`CPU_AND_GPU` is the default runtime. CPU-only prediction on macOS 26.4 produced
+incorrect results even for the FP32 control model, so use the tested default.
+The class retains its input buffer and supports `with CoreMLDetector(...)` to
+work around the [coremltools 9.0 input lifetime bug](https://github.com/apple/coremltools/pull/2829).
+
+The exporter always checks real CoreML prediction against the original FP32
+PyTorch model on the supplied images, horizontal flips, and black/white/random
+inputs. It writes `weights/gtr_s_obj365_fp16.verification.json` and exits with an
+error if parity fails. Raw queries are matched as an unordered set because top-k
+can permute nearby seed scores; original ordered errors are also reported.
+Numerical tolerance is checked, rather than bitwise equality. Default tolerances
+are 0.005 for all class probabilities and normalized boxes, and 0.002 / 0.5 px
+for detections above score 0.4. This is a smoke check, not a dataset mAP evaluation.
+
+```bash
+# Use additional images, or verify an existing package on another backend.
+.venv/bin/python tools/export_det_coreml.py --verify-images path/to/images
+.venv/bin/python tools/export_det_coreml.py --verify-only \
+    --compute-units all --report outputs/coreml/all.verification.json
+.venv/bin/python -m unittest discover -s tests -p test_det_coreml.py
+```
 
 
 ## Acknowledgements💗

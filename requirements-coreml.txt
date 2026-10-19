@@ -1,0 +1,2 @@
+# Install after requirements-mps.txt with uv pip install --python .venv/bin/python -r requirements-coreml.txt
+coremltools==9.0

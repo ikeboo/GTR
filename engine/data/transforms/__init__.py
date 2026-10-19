@@ -40,9 +40,11 @@ from ._transforms import (
     LargeScaleJitter,
     StandardScaleJitter,
     RandomPhotometricDistort,
+    ColorJitter,
     RandomZoomOut,
     RandomIoUCrop,
     RandomHorizontalFlip,
+    RandomVerticalFlip,
     Resize,
     PadToSize,
     SanitizeBoundingBoxes,
@@ -52,6 +54,7 @@ from ._transforms import (
     ConvertPILImage,
 )
 from .container import Compose
+from .det_augmentations import RandomHSV, RandomPerspective
 from .mosaic import Mosaic
 from .pose_augmentations import (
     GaussianBlur,

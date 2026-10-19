@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 *.pyc
 outputs/
+notebooks/
 repos/
 weights/
 # CUDA GLA extension build artifacts (engine/gtr/backbone/csrc/build.sh)

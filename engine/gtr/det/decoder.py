@@ -81,7 +81,13 @@ class Integral(nn.Module):
     def forward(self, x, project):
         shape = x.shape
         x = F.softmax(x.reshape(-1, self.reg_max + 1), dim=1)
-        x = F.linear(x, project.to(x.device)).reshape(-1, 4)
+        weights = project.to(x.device)
+        # MPSGraph aborts in the backward of F.linear with a rank-1 weight.
+        # Use the same weighted sum with a valid MPS gradient (as in pose).
+        if x.device.type == 'mps':
+            x = (x * weights.reshape(1, -1)).sum(dim=1).reshape(-1, 4)
+        else:
+            x = F.linear(x, weights).reshape(-1, 4)
         return x.reshape(list(shape[:-1]) + [-1])
 
 

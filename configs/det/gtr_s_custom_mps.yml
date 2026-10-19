@@ -1,0 +1,18 @@
+__include__: ['gtr_s_custom.yml']
+
+# Apple Silicon: keep the custom detection model and augmentations.
+device: mps
+use_amp: False
+sync_bn: False
+compile: False
+output_dir: outputs/custom_gtr_s_mps
+
+# Set GTR_GRAD_ACCUM_STEPS=32 when launching to retain the effective batch
+# size of 128 used by gtr_s_custom.yml and its optimizer / warmup schedule.
+train_dataloader:
+  total_batch_size: 4
+  num_workers: 4
+
+val_dataloader:
+  total_batch_size: 8
+  num_workers: 4
